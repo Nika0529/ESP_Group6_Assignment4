@@ -1,0 +1,25 @@
+LMMsetup <- function(form, dat, ref) {
+  # 构建固定效应矩阵 X 和响应变量 y
+  X <- model.matrix(form, data = dat)
+  y <- model.response(model.frame(form, data = dat))
+  
+  # 初始化随机效应矩阵 Z
+  Z <- NULL
+  # 根据 ref 构建 Z 矩阵
+  if (length(ref) > 0) {
+    for (vector in ref) {
+      if (length(vector) > 1) {
+        # 构建交互项块 Z_block
+        Z_block <- model.matrix(as.formula(paste("~", paste(vector, collapse = ":"), "- 1")), data = dat)
+      } else {
+        # 构建单变量块 Z_block
+        Z_block <- model.matrix(as.formula(paste("~", vector, "- 1")), data = dat)
+      }
+      # 将 Z_block 添加到 Z 矩阵中
+      Z <- cbind(Z, Z_block)
+    }
+  }
+  
+  # 返回包含 X、Z 和 y 的列表
+  return(list(X = X, Z = Z, y = y))
+}
