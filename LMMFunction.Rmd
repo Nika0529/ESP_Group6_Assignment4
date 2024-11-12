@@ -1,0 +1,128 @@
+LMMsetup <- function(form, dat, ref) {
+  # 构建固定效应矩阵 X 和响应变量 y
+  X <- model.matrix(form, data = dat)
+  y <- model.response(model.frame(form, data = dat))
+  
+  # 初始化随机效应矩阵 Z
+  Z <- NULL
+  # 根据 ref 构建 Z 矩阵
+  if (length(ref) > 0) {
+    for (vector in ref) {
+      if (length(vector) > 1) {
+        # 构建交互项块 Z_block
+        Z_block <- model.matrix(as.formula(paste("~", paste(vector, collapse = ":"), "- 1")), data = dat)
+      } else {
+        # 构建单变量块 Z_block
+        Z_block <- model.matrix(as.formula(paste("~", vector, "- 1")), data = dat)
+      }
+      # 将 Z_block 添加到 Z 矩阵中
+      Z <- cbind(Z, Z_block)
+    }
+  }
+  
+  # 返回包含 X、Z 和 y 的列表
+  return(list(X = X, Z = Z, y = y))
+}
+
+LMMprof <- function(theta, X, Z, y){
+  # QR分解
+  QR_Z <- qr(Z)
+  R <- qr.R(QR_Z)
+  sigma2 <- exp(theta[1])^2  # 确保 sigma2 是正数
+
+  # 构造 psi 矩阵，确保没有无穷或缺失值
+  theta_random <- theta[-1]
+  if (any(is.infinite(theta_random) | is.na(theta_random))) {
+    stop("Theta contains infinite or missing values.")
+  }
+  psi <- diag(exp(theta_random^2), length(theta_random))
+  
+  # 设置 Rpsi 矩阵，检查数值稳定性
+  p <- ncol(Z)
+  Rpsi <- R %*% psi %*% t(R) + diag(sigma2, p)
+  
+  # 检查 Rpsi 是否包含无穷值或缺失值
+  if (any(is.infinite(Rpsi)) | any(is.na(Rpsi))) {
+    stop("Rpsi contains infinite or missing values, possibly due to unstable theta values.")
+  }
+  
+  # 检查 Rpsi 是否正定
+  eigenvalues <- eigen(Rpsi, only.values = TRUE)$values
+  if (any(eigenvalues <= 0)) {
+    warning("Rpsi is not positive definite; adjusting sigma to improve stability.")
+    sigma2 <- sigma2 * 1.01  # 小幅度增加 sigma2 以避免数值不稳定
+    Rpsi <- R %*% psi %*% t(R) + diag(sigma2, p)
+  }
+
+  # 计算 Rpsi 的 Cholesky 分解和逆矩阵
+  L <- chol(Rpsi)
+  det_A <- prod(diag(L))^2
+  Rpsi_inv <- backsolve(t(L), forwardsolve(L, diag(ncol(L))))
+  
+  # 计算 Wy 和 WX
+  Qty <- as.matrix(qr.qty(QR_Z, y))
+  QtX <- as.matrix(qr.qty(QR_Z, X))
+  Rspi_Qty <- rbind(Rpsi_inv %*% Qty[1:p, , drop=FALSE], diag(1/sigma2, n-p) %*% Qty[(p+1):n, , drop=FALSE])
+  W_y <- qr.qy(QR_Z, Rspi_Qty)
+  Rpsi_QtX <- rbind(Rpsi_inv %*% QtX[1:p, , drop=FALSE], diag(1/sigma2, n-p) %*% QtX[(p+1):n, , drop=FALSE])
+  W_X <- qr.qy(QR_Z, Rpsi_QtX)
+  
+  # 计算 XtWX 和 XtWy
+  XtWX <- t(X) %*% W_X
+  XtWy <- t(X) %*% W_y
+  
+  # 计算 beta
+  L1 <- chol(XtWX)
+  beta_hat <- backsolve(t(L1), forwardsolve(L1, XtWy))
+  
+  # 计算负对数似然值
+  res <- y - (X %*% beta_hat)
+  neg_log_likelihood <- 0.5 * (t(res) %*% (W_y - W_X %*% beta_hat)) + 0.5 * (log(det_A) - (n-p) * log(sigma2))
+  
+  # 返回负对数似然值，并将 beta_hat 存为属性
+  attr(neg_log_likelihood, "beta_hat") <- beta_hat
+  return(list(neg_log_likelihood = neg_log_likelihood, beta_hat = beta_hat))
+}
+
+lmm <- function(form, dat, ref = list()) {
+  # 1. 使用 LMMsetup 函数设置 X、Z、y 等必要的结构
+  setup <- LMMsetup(form, dat, ref)
+  X <- setup$X
+  Z <- setup$Z
+  y <- setup$y
+  n <- nrow(Z)
+  p <- ncol(Z)
+  
+  # 2. 初始的 theta 值（log 标准差）
+  theta_init <- rep(0.1, p + 1)  # 假设初始值都为 0
+
+  # 3. 定义负对数似然函数，用于优化
+  neg_log_likelihood <- function(theta) {
+    LMMprof(theta, X, Z, y)$neg_log_likelihood
+  }
+
+  # 4. 使用 optim 函数优化 theta
+  opt_result <- optim(
+  par = theta_init,
+  fn = neg_log_likelihood,
+  method = "BFGS",
+  control = list(maxit = 1000, reltol = 1e-8)
+  )
+  
+  # 5. 从优化结果中提取 theta 和 beta 的估计值
+  theta_hat <- opt_result$par
+  beta_hat <- attr(LMMprof(theta_hat, X, Z, y), "beta_hat")  # 从 LMMprof 中提取 beta
+  
+  # 6. 返回结果
+  return(list(beta = beta_hat, theta = theta_hat))
+}
+
+setup <- LMMsetup(score ~ Machine,Machines,list("Worker",c("Worker","Machine")))
+X <- setup$X
+Z <- setup$Z
+y <- setup$y
+n <- nrow(Z)
+p <- ncol(Z)
+theta <- rep(0, p+1)
+LMMprof(theta, X, Z, y)
+lmm (score ~ Machine,Machines,list("Worker",c("Worker","Machine")))
