@@ -1,0 +1,75 @@
+LMMprof <- function(theta, X, Z, y) {
+  # Step 1: 提取方差参数
+  sigma2 <- exp(theta[1])^2  # 残差的方差 sigma^2
+  psi <- diag(exp(theta[-1])^2)  # 随机效应方差矩阵 Psi_theta
+  
+  # Step 2: 对 Z 进行 QR 分解，获取 QR 对象
+  QR_Z <- qr(Z)
+  R <- qr.R(QR_Z)  # 获取 R 矩阵
+  
+  # Step 3: 构建 A = R Psi_theta R^T + I_p sigma^2
+  A <- R %*% psi %*% t(R) + diag(sigma2, ncol(R))
+
+  # Step 4: 使用 Cholesky 分解求解线性系统，构建 W y 和 W X
+  # 将 y 和 X 投影到 Q 的空间
+  y_proj <- qr.qty(QR_Z, y)  # 使用 qr.qty 计算 Q^T y
+  X_proj <- qr.qty(QR_Z, X)  # 使用 qr.qty 计算 Q^T X
+  
+  # 对 A 进行 Cholesky 分解
+  L_A <- chol(A)  # A = L_A %*% t(L_A)
+  
+  # 计算 W y 的分块部分
+  W_y1 <- backsolve(t(L_A), forwardsolve(L_A, y_proj[1:ncol(R)]))  # 求解 A y_1
+  W_y2 <- y_proj[(ncol(R) + 1):length(y_proj)] / sigma2             # 后 n-p 维度的缩放
+  W_y_proj <- c(W_y1, W_y2)  # 合并分块结果
+
+  # 计算 W X 的分块部分
+  W_X1 <- apply(X_proj[1:ncol(R), , drop = FALSE], 2, function(col) {
+    backsolve(t(L_A), forwardsolve(L_A, col))
+  })
+  W_X2 <- X_proj[(ncol(R) + 1):nrow(X_proj), , drop = FALSE] / sigma2  # 后 n-p 维度的缩放
+  W_X_proj <- rbind(W_X1, W_X2)  # 合并分块结果
+
+  # 使用 qr.qy 将投影结果转换回原始空间
+  W_y <- qr.qy(QR_Z, W_y_proj)
+  W_X <- qr.qy(QR_Z, W_X_proj)
+  
+  # Step 5: 计算 XtWX 和 XtWy
+  XtWX <- t(X) %*% W_X
+  XtWy <- t(X) %*% W_y
+  
+  # Step 6: 使用 Cholesky 分解计算 beta_hat
+  L_XtWX <- chol(XtWX)
+  z <- forwardsolve(t(L_XtWX), XtWy)
+  beta_hat <- backsolve(L_XtWX, z)
+
+  # Step 7: 计算负对数似然值
+  log_det_part1 <- 2 * sum(log(diag(L_A)))
+  log_det_part2 <- (nrow(Z) - ncol(R)) * log(sigma2)
+  log_det <- log_det_part1 + log_det_part2
+  
+  # Step 5: 计算 (y - X beta)
+  resid <- y - X %*% beta
+  
+  # Step 6: 投影 resid 到 Q 空间，计算 W resid
+  resid_proj <- qr.qty(QR_Z, resid)
+  resid1 <- resid_proj[1:ncol(R)]
+  resid2 <- resid_proj[(ncol(R) + 1):length(resid_proj)] / sigma2
+  W_resid1 <- backsolve(t(L_A), forwardsolve(L_A, resid1))
+  W_resid <- c(W_resid1, resid2)
+  W_resid <- qr.qy(QR_Z, W_resid)
+  
+  # Step 7: 计算 (y - X beta)^T W (y - X beta)
+  quad_form <- t(resid) %*% W_resid
+  
+  # Step 8: 计算对数似然
+  log_likelihood <- -0.5 * (quad_form + log_det)
+  neg_log_likelihood<- -log_likelihood
+
+  
+  # Step 8: 将 beta_hat 作为属性添加到 neg_log_likelihood
+  attr(neg_log_likelihood, "beta_hat") <- beta_hat
+  
+  # 返回带有属性的 neg_log_likelihood
+  return(as.numeric(neg_log_likelihood))
+}
