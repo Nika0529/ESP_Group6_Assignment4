@@ -1,127 +1,135 @@
 LMMsetup <- function(form, dat, ref) {
-  # 构建固定效应矩阵 X 和响应变量 y
-  X <- model.matrix(form, data = dat)
-  y <- model.response(model.frame(form, data = dat))
+  # Construct the fixed effect matrix X and response variable y based on the formula 'form' and data 'dat'
+  X <- model.matrix(form, data = dat)  # Convert fixed effect variables in the formula to design matrix X
+  y <- model.response(model.frame(form, data = dat))  # Extract the response variable y
   
-  # 初始化随机效应矩阵 Z
+  # Initialize the random effect matrix Z, starting with Z as NULL
   Z <- NULL
-  # 根据 ref 构建 Z 矩阵
+  # Build blocks of Z matrix using each vector in 'ref'
   if (length(ref) > 0) {
     for (vector in ref) {
       if (length(vector) > 1) {
-        # 构建交互项块 Z_block
+        # If the 'ref' vector contains multiple variables, construct the model matrix Z_block for their interaction
         Z_block <- model.matrix(as.formula(paste("~", paste(vector, collapse = ":"), "- 1")), data = dat)
       } else {
-        # 构建单变量块 Z_block
+        # If it contains a single variable, directly generate the model matrix block Z_block
         Z_block <- model.matrix(as.formula(paste("~", vector, "- 1")), data = dat)
       }
-      # 将 Z_block 添加到 Z 矩阵中
+      # Combine Z_block into Z, so that Z contains model matrices for all random effects
       Z <- cbind(Z, Z_block)
     }
   }
   
-  # 返回包含 X、Z 和 y 的列表
+  # Return a list containing the fixed effect matrix X, random effect matrix Z, and response variable y
   return(list(X = X, Z = Z, y = y))
 }
 
 LMMprof <- function(theta, X, Z, y) {
+  # Get the number of rows and columns of Z, which are the number of observations and random effects, respectively
   n <- nrow(Z)
   p <- ncol(Z)
   
-  # Step 1: 提取方差参数
-  sigma2 <- exp(theta[1])^2  # 残差的方差 sigma^2
-  psi <- diag(exp(theta[-1])^2)  # 随机效应方差矩阵 Psi_theta
+  # Use the first parameter of theta for the residual variance sigma2, take exp squared to ensure it's positive
+  sigma2 <- exp(theta[1])^2
+  # Generate the random effect variance matrix psi, using the remaining elements in theta and taking exp squared
+  psi <- diag(exp(theta[-1])^2)
   
-  # Step 2: 对 Z 进行 QR 分解，获取 QR 对象
+  # Perform QR decomposition on Z and extract the R matrix
   QR_Z <- qr(Z)
-  R <- qr.R(QR_Z)  # 获取 R 矩阵
+  R <- qr.R(QR_Z)  # R matrix is the upper triangular matrix used to generate A
   
-  # Step 3: 构建 A = R Psi_theta R^T + I_p sigma^2
+  # Construct matrix A = R %*% psi %*% t(R) + I_p * sigma2 using random effect variances, for generating the inverse matrix
   A <- R %*% psi %*% t(R) + diag(sigma2, p)
 
-  # Step 4: 使用 Cholesky 分解求解线性系统，构建 W y 和 W X
-  # 将 y 和 X 投影到 Q 的空间
-  QTy <- qr.qty(QR_Z, y)  # 使用 qr.qty 计算 Q^T y
-  QTX <- qr.qty(QR_Z, X)  # 使用 qr.qty 计算 Q^T X
+  # Perform Cholesky decomposition on A to obtain its square root matrix L_A
+  L_A <- chol(A)  # A is decomposed as t(L_A) %*% L_A
   
-  # 对 A 进行 Cholesky 分解(chol输出的函数默认是上三角函数)
-  L_A <- chol(A)  # A = t(L_A) %*% L_A
+  # Project the response variable y into the space of Q to get QTy for computing W_y
+  QTy <- qr.qty(QR_Z, y)  
+  # Project the fixed effect matrix X into the space of Q to get QTX for computing W_X
+  QTX <- qr.qty(QR_Z, X)
   
-  # 计算 W y 的分块部分
-  W_y1 <- backsolve(L_A, forwardsolve(t(L_A), QTy[1:p]))  # 求解 A y_1
-  W_y2 <- QTy[(p + 1):length(QTy)] / sigma2             # 后 n-p 维度的缩放
-  W_y1y2 <- c(W_y1, W_y2)  # 合并分块结果
+  # Compute the first block (first p dimensions) of W_y using Cholesky decomposition
+  W_y1 <- backsolve(L_A, forwardsolve(t(L_A), QTy[1:p]))
+  # W_y2 is the remaining n - p dimensions of W_y, scaled by sigma2
+  W_y2 <- QTy[(p + 1):length(QTy)] / sigma2
+  # Combine W_y1 and W_y2 to get the complete W_y
+  W_y1y2 <- c(W_y1, W_y2)
 
-  # 计算 W X 的分块部分
+  # For each column in the first p rows of QTX, compute the first block of W_X using Cholesky decomposition
   W_X1 <- apply(QTX[1:p, , drop = FALSE], 2, function(col) {
     backsolve(L_A, forwardsolve(t(L_A), col))
   })
-  W_X2 <- QTX[(p + 1):nrow(QTX), , drop = FALSE] / sigma2  # 后 n-p 维度的缩放
-  W_X1X2 <- rbind(W_X1, W_X2)  # 合并分块结果
+  # W_X2 is the remaining n - p rows of W_X, scaled by sigma2
+  W_X2 <- QTX[(p + 1):nrow(QTX), , drop = FALSE] / sigma2
+  # Combine W_X1 and W_X2 to get the complete W_X
+  W_X1X2 <- rbind(W_X1, W_X2)
 
-  # 使用 qr.qy 将投影结果转换回原始空间
+  # Project W_y and W_X back from the space of Q to the original space
   W_y <- qr.qy(QR_Z, W_y1y2)
   W_X <- qr.qy(QR_Z, W_X1X2)
   
-  # Step 5: 计算 XtWX 和 XtWy
+  # Compute XTWX and XTWy, which are used to estimate beta
   XTWX <- t(X) %*% W_X
   XTWy <- t(X) %*% W_y
   
-  # Step 6: 使用 Cholesky 分解计算 beta_hat
+  # Solve XTWX * beta_hat = XTWy using Cholesky decomposition to obtain the estimate of beta
   L_XTWX <- chol(XTWX)
   beta_hat <- backsolve(L_XTWX, forwardsolve(t(L_XTWX), XTWy))
 
-  # Step 7: 计算负对6数似然值
-  # 先算(y-X%*%beta)^T(...)(y-X%*%beta)
+  # Compute the quadratic form of (y - X %*% beta_hat), used in the calculation of the log-likelihood
   res <- y - X %*% beta_hat
   QTres <- qr.qty(QR_Z, res)
+  # Compute W_r1 and W_r2, corresponding to the first p and last n-p dimensions of W_r
   W_r1 <- backsolve(L_A, forwardsolve(t(L_A), QTres[1:p]))
   W_r2 <- QTres[(p+1):n] / sigma2
+  # Combine W_r1 and W_r2 to get the complete W_r, and project back from the space of Q to the original space
   W_r1r2 <- c(W_r1, W_r2)
   W_r <- qr.qy(QR_Z, W_r1r2)
-  part1 <- t(res) %*% W_r
+  part1 <- t(res) %*% W_r  # Compute the value of the quadratic form
   
-  # 再算log|...| + (n-p)log(sigma2)
+  # Compute log|A| + (n-p) * log(sigma2), where log|A| is the logarithm of the determinant of A
   det1 <- 2 * sum(log(diag(L_A)))
-  det2 <- (n-p) * log(sigma2)
+  det2 <- (n - p) * log(sigma2)
   part2 <- det1 + det2
   
-  # 计算对数似然
+  # Convert the log-likelihood to negative log-likelihood
   log_likelihood <- -0.5 * (part1 + part2)
-  neg_log_likelihood<- -log_likelihood
+  neg_log_likelihood <- -log_likelihood
 
-   # Step 8: 将 beta_hat 作为属性添加到 neg_log_likelihood
+  # Add beta_hat as an attribute to the negative log-likelihood result
   attr(neg_log_likelihood, "beta_hat") <- beta_hat
   
-  # 返回带有属性的 neg_log_likelihood
+  # Return the negative log-likelihood with beta_hat attribute
   return(neg_log_likelihood)
 }
 
 lmm <- function(form, dat, ref = list()) {
-  # 使用 LMMsetup 函数来构建 X、Z 和 y
+  # Use the LMMsetup function to construct X, Z, and y
   setup <- LMMsetup(form, dat, ref)
-  X <- as.matrix(setup$X)  # 确保 X 是数值矩阵
-  Z <- as.matrix(setup$Z)  # 确保 Z 是数值矩阵
+  X <- as.matrix(setup$X)  # Ensure X is a numeric matrix
+  Z <- as.matrix(setup$Z)  # Ensure Z is a numeric matrix
   y <- setup$y
   p <- ncol(Z)
-  # 初始化 theta
-  theta_init <- rep(1, p+1)
   
-  # 优化 LMMprof 以找到 theta 的最大似然估计
+  # Initialize the initial values of theta as 1, assuming p + 1 parameters are all 1
+  theta_init <- rep(1, p + 1)
+  
+  # Use the optim function to optimize LMMprof to find theta that minimizes the negative log-likelihood
   opt_result <- optim(
     theta_init, 
-    function(theta) as.numeric(LMMprof(theta, X, Z, y)),
+    function(theta) as.numeric(LMMprof(theta, X, Z, y))
   )
   
-  # 提取优化结果中的负对数似然值和 theta_hat
+  # Extract the parameter theta from the optimization result
   theta_hat <- opt_result$par
   
-  # 使用最终的 theta_hat 调用 LMMprof 来获得 neg_log_likelihood 和 beta_hat
+  # Call LMMprof with the final theta_hat to compute the minimized negative log-likelihood and beta_hat
   final_result <- LMMprof(theta_hat, X, Z, y)
   neg_log_likelihood <- as.numeric(final_result)
   beta_hat <- attr(final_result, "beta_hat")
   
-  # 返回结果列表
+  # Return a list containing the negative log-likelihood value, optimal parameter theta_hat, and beta_hat
   return(list(
     neg_log_likelihood = neg_log_likelihood,
     theta_hat = theta_hat,
@@ -129,5 +137,5 @@ lmm <- function(form, dat, ref = list()) {
   ))
 }
 
-# Test
-lmm (score ~ Machine,Machines,list("Worker",c("Worker","Machine")))
+# Test code, run the lmm function with specified formula and dataset
+lmm(score ~ Machine, Machines, list("Worker", c("Worker", "Machine")))
