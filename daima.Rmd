@@ -53,7 +53,7 @@ LMMprof <- function(theta, X, Z, y) {
   W_y1y2 <- c(W_y1, W_y2)  # 合并分块结果
 
   # 计算 W X 的分块部分
-  W_X1 <- apply(X_proj[1:p, , drop = FALSE], 2, function(col) {
+  W_X1 <- apply(QTX[1:p, , drop = FALSE], 2, function(col) {
     backsolve(L_A, forwardsolve(t(L_A), col))
   })
   W_X2 <- QTX[(p + 1):nrow(QTX), , drop = FALSE] / sigma2  # 后 n-p 维度的缩放
@@ -68,8 +68,8 @@ LMMprof <- function(theta, X, Z, y) {
   XTWy <- t(X) %*% W_y
   
   # Step 6: 使用 Cholesky 分解计算 beta_hat
-  L_XtWX <- chol(XtWX)
-  beta_hat <- backsolve(L_XtWX, forwardsolve(t(L_XtWX), XtWy))
+  L_XTWX <- chol(XTWX)
+  beta_hat <- backsolve(L_XTWX, forwardsolve(t(L_XTWX), XTWy))
 
   # Step 7: 计算负对6数似然值
   # 先算(y-X%*%beta)^T(...)(y-X%*%beta)
@@ -103,7 +103,7 @@ lmm <- function(form, dat, ref = list()) {
   X <- as.matrix(setup$X)  # 确保 X 是数值矩阵
   Z <- as.matrix(setup$Z)  # 确保 Z 是数值矩阵
   y <- setup$y
-  
+  p <- ncol(Z)
   # 初始化 theta
   theta_init <- rep(1, p+1)
   
