@@ -45,13 +45,13 @@ LMMprof <- function(theta, X, Z, y, Z_block_sizes) {
     attr(neg_log_likelihood, "beta_hat") <- beta_hat
     return(neg_log_likelihood)
   }
-  n <- nrow(Z)
-  p <- ncol(Z)
   
   # Step 1: 提取方差参数
   sigma2 <- exp(theta[1])^2  # 残差的方差 sigma^2
   
- # 计算 psi 的对角元素
+  # 计算 psi 的对角元素
+  p = ncol(Z)
+  n = nrow(Z)
   psi_diag <- numeric(p) # 初始化长度为 p 的向量，用于存储对角元素
   start_index <- 1
   for (i in 1:length(Z_block_sizes)) {
@@ -69,28 +69,25 @@ LMMprof <- function(theta, X, Z, y, Z_block_sizes) {
   # Step 3: 构建 A = R Psi_theta R^T + I_p sigma^2
   A <- R %*% psi %*% t(R) + diag(sigma2, p)
   L_A <- chol(A)
-  
+  A_inv <- backsolve(L_A, forwardsolve(t(L_A), diag(1, nrow(A))))
+   
   # Step 4: 使用 Cholesky 分解求解线性系统，构建 W y 和 W X
   # 将 y 和 X 投影到 Q 的空间
   QTy <- qr.qty(QR_Z, y)  # 使用 qr.qty 计算 Q^T y
   QTX <- qr.qty(QR_Z, X)  # 使用 qr.qty 计算 Q^T X
-
-  # 计算 W y 的分块部分
-  W_y1 <- backsolve(L_A, forwardsolve(t(L_A), QTy[1:p]))  # 求解 A y_1
-  W_y2 <- QTy[(p + 1):length(QTy)] / sigma2             # 后 n-p 维度的缩放
-  W_y1y2 <- c(W_y1, W_y2)  # 合并分块结果
-
-  # 计算 W X 的分块部分
-  W_X1 <- apply(QTX[1:p, , drop = FALSE], 2, function(col) {
-    backsolve(L_A, forwardsolve(t(L_A), col))
-  })
-  W_X2 <- QTX[(p + 1):nrow(QTX), , drop = FALSE] / sigma2  # 后 n-p 维度的缩放
-  W_X1X2 <- rbind(W_X1, W_X2)  # 合并分块结果
+   
+  W_middle_qty1 <- A_inv %*% QTy[1:p]
+  W_middle_qty2 <- QTy[(p + 1):length(QTy)] / sigma2
+  W_middle_qty <- c(W_middle_qty1, W_middle_qty2)
+ 
+  W_middle_qtx1 <- A_inv %*% (QTX[1:p,])
+  W_middle_qtx2 <- QTX[(p + 1):nrow(QTX), , drop = FALSE] / sigma2  # 后 n-p 维度的缩放
+  W_middle_qtx <- rbind(W_middle_qtx1,W_middle_qtx2)
 
   # 使用 qr.qy 将投影结果转换回原始空间
-  W_y <- qr.qy(QR_Z, W_y1y2)
-  W_X <- qr.qy(QR_Z, W_X1X2)
-  
+  W_y <- qr.qy(QR_Z, W_middle_qty)
+  W_X <- qr.qy(QR_Z, W_middle_qtx)
+   
   # Step 5: 计算 XtWX 和 XtWy
   XTWX <- t(X) %*% W_X
   XTWy <- t(X) %*% W_y
@@ -98,15 +95,16 @@ LMMprof <- function(theta, X, Z, y, Z_block_sizes) {
   # Step 6: 使用 Cholesky 分解计算 beta_hat
   L_XTWX <- chol(XTWX)
   beta_hat <- backsolve(L_XTWX, forwardsolve(t(L_XTWX), XTWy))
-
+ 
   # Step 7: 计算负对数似然值
   # 先算(y-X%*%beta)^T(...)(y-X%*%beta)
   res <- y - X %*% beta_hat
   QTres <- qr.qty(QR_Z, res)
-  W_r1 <- backsolve(L_A, forwardsolve(t(L_A), QTres[1:p]))
-  W_r2 <- QTres[(p+1):n] / sigma2
-  W_r1r2 <- c(W_r1, W_r2)
-  W_r <- qr.qy(QR_Z, W_r1r2)
+  W_middle_qtr1 <- A_inv %*% QTres[1:p]
+  W_middle_qtr2 <- QTres[(p + 1):length(QTres)] / sigma2
+  W_middle_qtr <- c(W_middle_qtr1, W_middle_qtr2)
+
+  W_r <- qr.qy(QR_Z, W_middle_qtr)
   part1 <- t(res) %*% W_r
   
   # 再算log|...| + (n-p)log(sigma2)
