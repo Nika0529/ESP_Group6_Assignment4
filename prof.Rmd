@@ -1,7 +1,17 @@
 LMMprof <- function(theta, X, Z, y) {
   # Step 1: 提取方差参数
   sigma2 <- exp(theta[1])^2  # 残差的方差 sigma^2
-  psi <- diag(exp(theta[-1])^2)  # 随机效应方差矩阵 Psi_theta
+  
+  # 计算 psi 的对角元素
+  psi_diag <- numeric(p) # 初始化长度为 p 的向量，用于存储对角元素
+  start_index <- 1
+  for (i in 1:length(Z_block_sizes)) {
+    block_size <- Z_block_sizes[i]
+    # 为每个块的对角线赋值相同的方差参数 exp(theta[i + 1])^2
+    psi_diag[start_index:(start_index + block_size - 1)] <- exp(theta[i + 1])^2
+    start_index <- start_index + block_size  # 更新起始索引
+  }
+  psi <- diag(psi_diag)
   
   # Step 2: 对 Z 进行 QR 分解，获取 QR 对象
   QR_Z <- qr(Z)
