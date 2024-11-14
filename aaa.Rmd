@@ -1,0 +1,179 @@
+# 设置LMMSetup
+LMMsetup <- function(form, dat, ref) {
+  # 构建固定效应矩阵 X 和响应变量 y
+  X <- model.matrix(form, data = dat)
+  y <- model.response(model.frame(form, data = dat))
+  # 初始化随机效应矩阵 Z 和一个列表，用于存储每个块的列数
+  Z <- NULL
+  Z_block_sizes <- length(ref)
+  
+  # 根据 ref 构建 Z 矩阵
+  if (length(ref) > 0) {
+    for (i in 1:length(ref)) {
+      vector <- ref[[i]]
+      if (length(vector) > 1) {
+        # 构建交互项块 Z_block
+        Z_block <- model.matrix(as.formula(paste("~", paste(vector, collapse = ":"), "- 1")), data = dat)
+      } else {
+        # 构建单变量块 Z_block
+        Z_block <- model.matrix(as.formula(paste("~", vector, "- 1")), data = dat)
+      }
+      # 将 Z_block 添加到 Z 矩阵中，并记录块的列数
+      Z <- cbind(Z, Z_block)
+      Z_block_sizes[i] <- ncol(Z_block)
+    }
+  }
+  # 返回包含 X、Z、y 和 Z_block_sizes 的列表
+  return(list(X = X, Z = Z, y = y, Z_block_sizes = Z_block_sizes))
+}
+
+LMMprof <- function(theta, X, Z, y, Z_block_sizes) {
+  if (is.null(Z)) {
+    # 如果没有随机效应，直接计算 beta_hat 和负对数似然
+    beta_hat <- solve(t(X) %*% X) %*% t(X) %*% y  # 使用最小二乘法计算 beta_hat
+    residuals <- y - (X %*% beta_hat)
+    neg_log_likelihood <- -sum(dnorm(residuals, mean = 0, sd = sqrt(exp(theta[1])^2), log = TRUE))
+    
+    # 将 beta_hat 作为属性添加到负对数似然值
+    attr(neg_log_likelihood, "beta_hat") <- beta_hat
+    return(neg_log_likelihood)
+  }
+  n <- nrow(Z)
+  p <- ncol(Z)
+  
+  # Step 1: 提取方差参数
+  sigma2 <- exp(theta[1])^2  # 残差的方差 sigma^2
+  
+ # 计算 psi 的对角元素
+  psi_diag <- numeric(p) # 初始化长度为 p 的向量，用于存储对角元素
+  start_index <- 1
+  for (i in 1:length(Z_block_sizes)) {
+    block_size <- Z_block_sizes[i]
+    # 为每个块的对角线赋值相同的方差参数 exp(theta[i + 1])^2
+    psi_diag[start_index:(start_index + block_size - 1)] <- exp(theta[i + 1])^2
+    start_index <- start_index + block_size  # 更新起始索引
+  }
+  psi <- diag(psi_diag)
+  
+  # Step 2: 对 Z 进行 QR 分解，获取 QR 对象
+  QR_Z <- qr(Z)
+  R <- qr.R(QR_Z)  # 获取 R 矩阵
+  
+  # Step 3: 构建 A = R Psi_theta R^T + I_p sigma^2
+  A <- R %*% psi %*% t(R) + diag(sigma2, p)
+  L_A <- chol(A)
+  
+  # Step 4: 使用 Cholesky 分解求解线性系统，构建 W y 和 W X
+  # 将 y 和 X 投影到 Q 的空间
+  QTy <- qr.qty(QR_Z, y)  # 使用 qr.qty 计算 Q^T y
+  QTX <- qr.qty(QR_Z, X)  # 使用 qr.qty 计算 Q^T X
+
+  # 计算 W y 的分块部分
+  W_y1 <- backsolve(L_A, forwardsolve(t(L_A), QTy[1:p]))  # 求解 A y_1
+  W_y2 <- QTy[(p + 1):length(QTy)] / sigma2             # 后 n-p 维度的缩放
+  W_y1y2 <- c(W_y1, W_y2)  # 合并分块结果
+
+  # 计算 W X 的分块部分
+  W_X1 <- apply(QTX[1:p, , drop = FALSE], 2, function(col) {
+    backsolve(L_A, forwardsolve(t(L_A), col))
+  })
+  W_X2 <- QTX[(p + 1):nrow(QTX), , drop = FALSE] / sigma2  # 后 n-p 维度的缩放
+  W_X1X2 <- rbind(W_X1, W_X2)  # 合并分块结果
+
+  # 使用 qr.qy 将投影结果转换回原始空间
+  W_y <- qr.qy(QR_Z, W_y1y2)
+  W_X <- qr.qy(QR_Z, W_X1X2)
+  
+  # Step 5: 计算 XtWX 和 XtWy
+  XTWX <- t(X) %*% W_X
+  XTWy <- t(X) %*% W_y
+  
+  # Step 6: 使用 Cholesky 分解计算 beta_hat
+  L_XTWX <- chol(XTWX)
+  beta_hat <- backsolve(L_XTWX, forwardsolve(t(L_XTWX), XTWy))
+
+  # Step 7: 计算负对数似然值
+  # 先算(y-X%*%beta)^T(...)(y-X%*%beta)
+  res <- y - X %*% beta_hat
+  QTres <- qr.qty(QR_Z, res)
+  W_r1 <- backsolve(L_A, forwardsolve(t(L_A), QTres[1:p]))
+  W_r2 <- QTres[(p+1):n] / sigma2
+  W_r1r2 <- c(W_r1, W_r2)
+  W_r <- qr.qy(QR_Z, W_r1r2)
+  part1 <- t(res) %*% W_r
+  
+  # 再算log|...| + (n-p)log(sigma2)
+  det1 <- 2 * sum(log(diag(L_A)))
+  det2 <- (n-p) * log(sigma2)
+  part2 <- det1 + det2
+  
+  # 计算对数似然
+  log_likelihood <- -0.5 * (part1 + part2)
+  neg_log_likelihood <- -log_likelihood
+
+  # 将 beta_hat 作为属性添加到 neg_log_likelihood
+  attr(neg_log_likelihood, "beta_hat") <- beta_hat
+  
+  # 返回带有属性的 neg_log_likelihood
+  return(neg_log_likelihood)
+}
+
+lmm <- function(form, dat, ref = list()) {
+  #如果ref不为NULL，则调用LMMsetup函数，ref为NULL，则Z为NULL
+  if(length(ref)>0){
+    setup <- LMMsetup(form, dat, ref)
+    X <- as.matrix(setup$X)  # 确保 X 是数值矩阵
+    Z <- as.matrix(setup$Z)  # 确保 Z 是数值矩阵
+    y <- setup$y
+    Z_block_sizes <- setup$Z_block_sizes
+  }else{
+    X <- model.matrix(form, data = dat)
+    y <- model.response(model.frame(form, data = dat))
+    Z <- NULL
+  }
+  # 初始化 theta，长度为 length(ref) + 1
+  theta_init <- if(length(ref)>0) rep(0, length(ref) + 1) else 0
+  
+  # 优化 LMMprof 以找到 theta 的最大似然估计
+  if(length(ref)>0){
+    opt_result <- optim(
+      theta_init, 
+      function(theta) as.numeric(LMMprof(theta, X, Z, y, Z_block_sizes)),
+      )
+  }else{
+      opt_result <- optim(
+        theta_init, 
+        function(theta) as.numeric(LMMprof(theta, X, Z, y, Z_block_sizes)),
+        method = "Brent",
+        lower = -100,
+        upper = 100
+      )
+  }
+  
+  
+  # 提取优化结果中的负对数似然值和 theta_hat
+  theta_hat <- opt_result$par
+  # 使用最终的 theta_hat 调用 LMMprof 来获得 neg_log_likelihood 和 beta_hat
+  final_result <- LMMprof(theta_hat, X, Z, y, Z_block_sizes)
+  neg_log_likelihood <- as.numeric(final_result)
+  beta_hat <- attr(final_result, "beta_hat")
+  
+  # 返回结果列表
+  return(list(
+    neg_log_likelihood = neg_log_likelihood,
+    theta_hat = theta_hat,
+    beta_hat = beta_hat
+  ))
+}
+  
+# Test
+lmm (score ~ Machine,Machines,list("Worker",c("Worker","Machine")))
+lmer(score ~ Machine + (1|Worker) + (1|Worker:Machine),data=Machines,REML=FALSE)
+# Using debug
+#debug(lmm)
+#lmm_result <- lmm(score ~ Machine,Machines,list("Worker",c("Worker","Machine")))
+#undebug(lmm)
+
+#测试ref为NULL的情况
+lmm(score ~ Machine, Machines)
+lm(score ~ Machine, Machines)
