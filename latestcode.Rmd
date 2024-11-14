@@ -28,6 +28,11 @@ LMMsetup <- function(form, dat, ref) {
 }
 
 LMMprof <- function(theta, X, Z, y, Z_block_sizes) {
+  if (is.null(Z)) {
+    # 如果没有随机效应，直接计算残差的负对数似然
+    residuals <- y - (X * theta)
+    return(-sum(dnorm(residuals, mean = 0, sd = 1, log = TRUE)))
+  }
   n <- nrow(Z)
   p <- ncol(Z)
   
@@ -109,6 +114,7 @@ LMMprof <- function(theta, X, Z, y, Z_block_sizes) {
 }
 
 lmm <- function(form, dat, ref = list()) {
+  #如果ref不为NULL，则调用LMMsetup函数，ref为NULL，则Z为NULL
   if(length(ref)>0){
     setup <- LMMsetup(form, dat, ref)
     X <- as.matrix(setup$X)  # 确保 X 是数值矩阵
@@ -121,13 +127,24 @@ lmm <- function(form, dat, ref = list()) {
     Z <- NULL
   }
   # 初始化 theta，长度为 length(ref) + 1
-  theta_init <- rep(0, length(ref) + 1)
+  theta_init <- if(length(ref)>0) rep(0, length(ref) + 1) else 0
   
   # 优化 LMMprof 以找到 theta 的最大似然估计
-  opt_result <- optim(
-    theta_init, 
-    function(theta) as.numeric(LMMprof(theta, X, Z, y, Z_block_sizes)),
-  )
+  if(length(ref)>0){
+    opt_result <- optim(
+      theta_init, 
+      function(theta) as.numeric(LMMprof(theta, X, Z, y, Z_block_sizes)),
+      )
+  }else{
+      opt_result <- optim(
+        theta_init, 
+        function(theta) as.numeric(LMMprof(theta, X, Z, y, Z_block_sizes)),
+        method = "Brent",
+        lower = -100,
+        upper = 100
+      )
+  }
+  
   
   # 提取优化结果中的负对数似然值和 theta_hat
   theta_hat <- opt_result$par
