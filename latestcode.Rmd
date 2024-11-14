@@ -29,8 +29,15 @@ LMMsetup <- function(form, dat, ref) {
 
 LMMprof <- function(theta, X, Z, y, Z_block_sizes) {
   if (is.null(Z)) {
-    # 如果没有随机效应，直接计算 beta_hat 和负对数似然
-    beta_hat <- solve(t(X) %*% X) %*% t(X) %*% y  # 使用最小二乘法计算 beta_hat
+    # 如果没有随机效应，使用 QR 分解计算 beta_hat 和负对数似然
+    QR_X <- qr(X)
+    Qy <- qr.qty(QR_X, y)  # 计算 Q^T * y
+    R <- qr.R(QR_X)  # 获取 R 矩阵
+
+    # 通过 backsolve 求解 beta_hat（R %*% beta_hat = Q^T * y）
+    beta_hat <- backsolve(R, Qy[1:ncol(X)])
+
+    # 计算残差和负对数似然
     residuals <- y - (X %*% beta_hat)
     neg_log_likelihood <- -sum(dnorm(residuals, mean = 0, sd = sqrt(exp(theta[1])^2), log = TRUE))
     
