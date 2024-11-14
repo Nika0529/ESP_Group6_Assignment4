@@ -29,9 +29,14 @@ LMMsetup <- function(form, dat, ref) {
 
 LMMprof <- function(theta, X, Z, y, Z_block_sizes) {
   if (is.null(Z)) {
-    # 如果没有随机效应，直接计算残差的负对数似然
-    residuals <- y - (X * theta)
-    return(-sum(dnorm(residuals, mean = 0, sd = 1, log = TRUE)))
+    # 如果没有随机效应，直接计算 beta_hat 和负对数似然
+    beta_hat <- solve(t(X) %*% X) %*% t(X) %*% y  # 使用最小二乘法计算 beta_hat
+    residuals <- y - (X %*% beta_hat)
+    neg_log_likelihood <- -sum(dnorm(residuals, mean = 0, sd = sqrt(exp(theta[1])^2), log = TRUE))
+    
+    # 将 beta_hat 作为属性添加到负对数似然值
+    attr(neg_log_likelihood, "beta_hat") <- beta_hat
+    return(neg_log_likelihood)
   }
   n <- nrow(Z)
   p <- ncol(Z)
@@ -163,10 +168,12 @@ lmm <- function(form, dat, ref = list()) {
   
 # Test
 lmm (score ~ Machine,Machines,list("Worker",c("Worker","Machine")))
-
+lmer(score ~ Machine + (1|Worker) + (1|Worker:Machine),data=Machines,REML=FALSE)
 # Using debug
 #debug(lmm)
 #lmm_result <- lmm(score ~ Machine,Machines,list("Worker",c("Worker","Machine")))
 #undebug(lmm)
 
-lmm(score ~ Machine,Machines)
+#测试ref为NULL的情况
+lmm(score ~ Machine, Machines)
+lm(score ~ Machine, Machines)
