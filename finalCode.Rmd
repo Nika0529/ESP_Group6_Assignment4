@@ -2,6 +2,8 @@
 #Xiaohan Tian: Participated in the discussion on the design of LMMprof, was responsible for the implementation of core calculations (QR decomposition, Cholesky decomposition), and wrote corresponding partial comments. (Contribution: 30%)
 #Shihan Wang: Participated in the discussion on the design of LMMprof, integrated the implementation of the main function lmm, supplemented the code in the absence of random effects, and wrote the overall comment of the code. (Contribution: 30%)
 
+#The GitHub link is as follow: https://github.com/Nika0529/ESP_Group6_Assignment4.git
+
 # Define the LMMsetup function to construct fixed effect and random effect matrices
 LMMsetup <- function(form, dat, ref) {
   # Construct the fixed effect matrix X and response variable y based on the formula 'form' and data 'dat'
