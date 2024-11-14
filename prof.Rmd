@@ -1,4 +1,7 @@
 LMMprof <- function(theta, X, Z, y, Z_block_sizes) {
+  n <- nrow(Z)
+  p <- ncol(Z)
+
   # Step 1: 提取方差参数
   sigma2 <- exp(theta[1])^2  # 残差的方差 sigma^2
   
