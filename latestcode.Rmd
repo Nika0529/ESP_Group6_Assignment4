@@ -142,7 +142,7 @@ lmm <- function(form, dat, ref = list()) {
   # 优化 LMMprof 以找到 theta 的最大似然估计
   if(length(ref)>0){
     opt_result <- optim(
-      theta_init, 
+      theta_init,
       function(theta) as.numeric(LMMprof(theta, X, Z, y, Z_block_sizes)),
       )
   }else{
