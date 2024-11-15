@@ -140,8 +140,10 @@ LMMprof <- function(theta, setup) {
   W_X1 <- apply(QTX[1:p, , drop = FALSE], 2, function(col) {
     backsolve(L_A, forwardsolve(t(L_A), col))
   })
-  W_X2 <- QTX[(p + 1):nrow(QTX), , drop = FALSE] / sigma2  # Scale remaining n - p dimensions
-  W_X1X2 <- rbind(W_X1, W_X2)  # Combine results to get the middle part of W mutiply QTX
+  # Scale remaining n - p dimensions
+  W_X2 <- QTX[(p + 1):nrow(QTX), , drop = FALSE] / sigma2  
+  # Combine results to get the middle part of W mutiply QTX
+  W_X1X2 <- rbind(W_X1, W_X2) 
 
   # Calculate W * y and W * X
   W_y <- qr.qy(QR_Z, W_y1y2)
