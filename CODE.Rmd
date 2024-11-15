@@ -1,0 +1,236 @@
+# Yiming Huang: Participated in the discussion of LMMprof design, combed 
+# the code framework, implemented the LMMsetup function, tested and optimized 
+# the code, and wrote corresponding partial comments. (Contribution: 40%)
+
+# Xiaohan Tian: Participated in the discussion on the design of LMMprof, was 
+# responsible for the implementation of core calculations (QR decomposition, 
+# Cholesky decomposition), and wrote corresponding partial comments. 
+# (Contribution: 30%)
+
+# Shihan Wang: Participated in the discussion on the design of LMMprof, 
+# integrated the implementation of the main function lmm, supplemented the code 
+# in the absence of random effects, and wrote the overall comment of the code. 
+# (Contribution: 30%)
+
+# GitHub link for this assignment is as follow: 
+# https://github.com/Nika0529/ESP_Group6_Assignment4.git
+
+# Overview: This code constructs a function to estimate the parameters of a 
+# Linear Mixed Model (LMM). It optimizes the fit using Maximum Likelihood 
+# Estimation. The function takes as input form (model formula), dat (data frame), 
+# and ref (list of random effects), and outputs a list containing the MLEs 
+# of beta and theta.
+
+# Define the LMMsetup function to extract the response variable (y), construct 
+# the design matrix X for the fixed effects, and the random effects matrix Z, 
+# while recording the block size information of Z as Z_block_sizes. The input 
+# includes the model formula 'form', data frame 'dat', and list of random 
+# effects 'ref'. The output is a list containing y, X, Z, and Z_block_sizes.
+LMMsetup <- function(form, dat, ref) {
+  # Construct X and y based on the formula 'form' and data 'dat'
+  # Extract response variable y
+  y <- model.response(model.frame(form, data = dat))  
+  
+  # Convert fixed effects in the formula to design matrix X
+  X <- model.matrix(form, data = dat) 
+
+  # Initialize the random effect matrix Z and a vector to store column sizes of
+  # each block in Z
+  Z <- NULL
+  Z_block_sizes <- length(ref)
+  
+  # If 'ref' is not empty, construct the random effect matrix Z 
+  # based on each element in 'ref'
+  if (length(ref) > 0) {
+    for (i in 1:length(ref)) {
+      vector <- ref[[i]]
+      if (length(vector) > 1) {
+        # If the current element in 'ref' contains multiple variables, 
+        # construct an interaction term block Z_block
+        Z_block <- model.matrix(as.formula(paste("~", paste(vector, collapse = ":"), "- 1")), data = dat)
+      } else {
+        # If the current element in 'ref' contains a single variable, 
+        # directly construct the Z_block
+        Z_block <- model.matrix(as.formula(paste("~", vector, "- 1")), data = dat)
+      }
+      # Append Z_block to the Z matrix and store the column count of this block 
+      # in Z_block_sizes
+      Z <- cbind(Z, Z_block)
+      Z_block_sizes[i] <- ncol(Z_block)
+    }
+  }
+  # Return a list containing the response variable y, fixed effect matrix X, 
+  # random effect matrix Z, and Z_block_sizes
+  # Z_block_sizes will be used in later calculations to build psi
+  return(list(y = y, X = X, Z = Z, Z_block_sizes = Z_block_sizes))
+}
+
+# Define the LMMprof function to calculate beta_hat for a given theta using. 
+# The input includes a list 'setup'(which includes response variable y, fixed 
+# effects matrix X, random effects Z, and ithe block size information of Z) and 
+# a theta. The output is the negative log-likelihood with beta_hat as an attribute.
+LMMprof <- function(theta, setup) {
+  # Extract the elements from setup
+  X <- as.matrix(setup$X)  # Ensure X is a numeric matrix
+  Z <- setup$Z
+  y <- setup$y
+  Z_block_sizes <- setup$Z_block_sizes
+   
+  if (is.null(Z)) {
+    # If there are no random effects (i.e., Z is NULL), calculate beta_hat and 
+    # negative log-likelihood using QR decomposition
+    QR_X <- qr(X)  # Perform QR decomposition on X
+    Qy <- qr.qty(QR_X, y)  # Compute Q^T * y, which projects y into the space of Q
+    R <- qr.R(QR_X)  # Extract the R matrix from the QR decomposition of X
+
+    # Solve for beta_hat using backsolve (solving R * beta_hat = Q^T * y)
+    beta_hat <- backsolve(R, Qy[1:ncol(X)])
+
+    # Calculate residuals and the negative log-likelihood
+    residuals <- y - (X %*% beta_hat)
+    # Compute the negative log-likelihood, assuming residuals follow a normal 
+    # distribution with variance exp(theta[1])^2
+    neg_log_likelihood <- -sum(dnorm(residuals, mean = 0, sd = sqrt(exp(theta[1])^2), log = TRUE))
+    
+    # Attach beta_hat as an attribute to the negative log-likelihood
+    attr(neg_log_likelihood, "beta_hat") <- beta_hat
+    return(neg_log_likelihood)
+  }
+  
+  # Ensure Z is a numeric matrix (in the case of Z is not NULL)
+  Z <- as.matrix(setup$Z)  
+  
+  n <- nrow(Z)  # Number of observations
+  p <- ncol(Z)  # Number of random effects
+  
+  # Extract the variance parameter sigma2, calculated as residual variance
+  sigma2 <- exp(theta[1])^2
+  
+  # Calculate diagonal elements of psi, applying the same variance parameter 
+  # to each random effect block
+  psi_diag <- numeric(p)  # Initialize psi's diagonal elements
+  start_index <- 1  # Track the starting index for each block in Z
+  for (i in 1:length(Z_block_sizes)) {
+    block_size <- Z_block_sizes[i]
+    # Assign the same variance parameter exp(theta[i + 1])^2 to the diagonal of each block
+    psi_diag[start_index:(start_index + block_size - 1)] <- exp(theta[i + 1])^2
+    start_index <- start_index + block_size  # Update the starting index for the next block
+  }
+  psi <- diag(psi_diag)  # Construct the diagonal matrix psi
+  
+  # Perform QR decomposition on Z to compute A = R Psi R^T + sigma^2 * I_p
+  QR_Z <- qr(Z)
+  R <- qr.R(QR_Z)  # Retrieve R matrix from the QR decomposition of Z
+  
+  # Construct matrix A and perform Cholesky decomposition to improve numerical stability
+  A <- R %*% psi %*% t(R) + diag(sigma2, p)
+  L_A <- chol(A)  # Cholesky decomposition of A
+  
+  # Use Cholesky decomposition to solve the linear system and construct W_y and W_X
+  QTy <- qr.qty(QR_Z, y)  # Project y into the space of Q
+  QTX <- qr.qty(QR_Z, X)  # Project X into the space of Q
+
+  # Calculate the middle part of W mutiply QTy
+  W_y1 <- backsolve(L_A, forwardsolve(t(L_A), QTy[1:p]))  # Solve for A-1_y
+  W_y2 <- QTy[(p + 1):length(QTy)] / sigma2  # Scale remaining n - p dimensions
+  W_y1y2 <- c(W_y1, W_y2)  # Combine results to get the middle part of W mutiply QTy
+
+  # Calculate the middle part of W mutiply QTX
+  # For every column in QTX[1:P, ], solve for A-1_x
+  W_X1 <- apply(QTX[1:p, , drop = FALSE], 2, function(col) {
+    backsolve(L_A, forwardsolve(t(L_A), col))
+  })
+  W_X2 <- QTX[(p + 1):nrow(QTX), , drop = FALSE] / sigma2  # Scale remaining n - p dimensions
+  W_X1X2 <- rbind(W_X1, W_X2)  # Combine results to get the middle part of W mutiply QTX
+
+  # Calculate W * y and W * X
+  W_y <- qr.qy(QR_Z, W_y1y2)
+  W_X <- qr.qy(QR_Z, W_X1X2)
+  
+  # Compute XTWX and XTWy, which are used to estimate beta
+  XTWX <- t(X) %*% W_X
+  XTWy <- t(X) %*% W_y
+  
+  # Compute beta_hat by solving XtWX * beta_hat = XtWy using Cholesky decomposition
+  L_XTWX <- chol(XTWX)
+  beta_hat <- backsolve(L_XTWX, forwardsolve(t(L_XTWX), XTWy))
+
+  # Calculate the negative log-likelihood
+  res <- y - X %*% beta_hat  # Calculate residuals
+  QTres <- qr.qty(QR_Z, res) # Project res into the space of Q
+  
+  # Calculate the middle part of W mutiply QTres
+  W_r1 <- backsolve(L_A, forwardsolve(t(L_A), QTres[1:p]))
+  W_r2 <- QTres[(p+1):n] / sigma2
+  W_r1r2 <- c(W_r1, W_r2)
+  
+  # Calculate W * res
+  W_r <- qr.qy(QR_Z, W_r1r2)
+  
+  part1 <- t(res) %*% W_r  # Calculate the quadratic form
+  
+  # Compute log|A| + (n - p) * log(sigma2), where log|A| is the log-determinant of A
+  det1 <- 2 * sum(log(diag(L_A)))
+  det2 <- (n - p) * log(sigma2)
+  part2 <- det1 + det2
+  
+  # Convert the log-likelihood to negative log-likelihood
+  log_likelihood <- -0.5 * (part1 + part2)
+  neg_log_likelihood <- -log_likelihood
+
+  # Attach beta_hat as an attribute to the negative log-likelihood
+  attr(neg_log_likelihood, "beta_hat") <- beta_hat
+  
+  # Return the negative log-likelihood with beta_hat as an attribute
+  return(neg_log_likelihood)
+}
+
+# Define the main function lmm, which first obtains the required matrices and 
+# vectors by running LMMsetup. Then, it optimizes LMMprof as the objective 
+# function to obtain the optimal theta_hat, and finally uses theta_hat to run 
+# LMMprof and derive the optimal beta_hat and log likelihood. The input includes 
+# the model formula 'form', data frame 'dat', and list of random effects 'ref'. 
+# The output is a list containing theta_hat, beta_hat and log_likelihood 
+# (dropping uninteresting constants).
+lmm <- function(form, dat, ref = list()) {
+  # Run LMMsetup and store the result in setup.
+  setup <- LMMsetup(form, dat, ref)
+
+  # Initialize theta 
+  theta_init <- rep(0, length(ref) + 1) 
+  
+  # Optimize LMMprof to find the maximum likelihood estimates for theta
+  if (length(ref) > 0) {
+    # If random effects are present, call optim
+    opt_result <- optim(
+      theta_init, 
+      function(theta) as.numeric(LMMprof(theta, setup))
+    )
+  } else {
+    # If no random effects, call optim with bounds for theta using method 'Brent'
+    y <- setup$y
+    opt_result <- optim(
+      theta_init, 
+      function(theta) as.numeric(LMMprof(theta, setup)),
+      method = "Brent",
+      lower = -100 * abs(log(sd(y))),
+      upper = 100 * abs(log(sd(y)))
+    )
+  }
+  
+  # Extract theta from the optimization result
+  theta_hat <- opt_result$par
+  
+  # Call LMMprof with the final theta_hat to compute the minimized negative 
+  # log-likelihood and beta_hat
+  final_result <- LMMprof(theta_hat, setup)
+  neg_log_likelihood <- as.numeric(final_result)
+  beta_hat <- attr(final_result, "beta_hat")
+  
+  # Return a list containing the log-likelihood, optimal theta_hat, and beta_hat
+  return(list(
+    log_likelihood = - neg_log_likelihood,
+    theta_hat = theta_hat,
+    beta_hat = beta_hat
+  ))
+}
